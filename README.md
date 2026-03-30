@@ -7,6 +7,7 @@ Protect AI coding agents from deleting the wrong files before it happens.
 Unlike a traditional `safe-rm` wrapper, ShellGuardian focuses on prevention first:
 
 - preview deletion risk before anything is removed
+- scan the current project and suggest cleanup targets
 - block obviously dangerous targets such as `src/`, `.git/`, or the workspace root
 - delete only likely disposable files by default
 - require confirmation for ambiguous paths
@@ -16,7 +17,7 @@ It is designed for three reuse layers:
 
 - Library: `safe_delete()`, `preview_delete()`, `smart_delete()`, `safe_move()`, `safe_exec()`
 - CLI: `shellguardian preview|rm|move|exec`
-- Server / webhook ready core: policy validation and audit logging are separated from the transport layer
+- Future server/webhook support: policy validation and audit logging are separated from the transport layer
 
 ## Why this exists
 
@@ -33,6 +34,7 @@ ShellGuardian flips the default:
 - reject protected paths
 - keep work inside the current workspace by default
 - support dry-runs first
+- scan the workspace for likely cleanup candidates
 - preview risk before deletion
 - delete likely disposable items first
 - require explicit overrides for risky behavior
@@ -42,8 +44,10 @@ This makes it a better fit for agent guardrails than tools that mainly focus on 
 
 ## Install
 
+ShellGuardian is not on PyPI yet. Right now, install it from GitHub:
+
 ```bash
-pip install shellguardian
+pip install git+https://github.com/zedoodez/shellguardian.git
 ```
 
 For local development:
@@ -51,7 +55,7 @@ For local development:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e '.[test]' --no-build-isolation
 pytest
 ```
 
@@ -85,6 +89,9 @@ print(exec_result.returncode)
 ### CLI
 
 ```bash
+shellguardian scan
+shellguardian clean --all-likely
+shellguardian clean --select 1 2
 shellguardian preview ./tmp
 shellguardian rm ./tmp --smart
 shellguardian rm ./tmp --smart --yes
@@ -92,6 +99,38 @@ shellguardian rm ./tmp/cache --dry-run
 shellguardian move ./tmp/a.txt ./tmp/archive/a.txt
 shellguardian exec python3 -- --version
 ```
+
+### Workspace scan
+
+`shellguardian scan` is the most user-friendly entry point. Instead of asking you to guess a path, it inspects the current project and suggests cleanup targets:
+
+- `Likely disposable`: things like `build/`, `dist/`, `tmp/`, `.pytest_cache/`, `__pycache__/`
+- `Review recommended`: directories that may be cleanup-related but still deserve a second look
+- `High risk`: important source, config, and repository paths that are intentionally not suggested
+
+Example:
+
+```bash
+shellguardian scan
+```
+
+```text
+Workspace scan: /repo
+
+Suggested cleanup targets
+- 3 candidate(s): 3 likely disposable, 0 review recommended
+1. .pytest_cache [LOW] (common cache/build/temp directory)
+2. build [LOW] (common cache/build/temp directory)
+3. dist [LOW] (common cache/build/temp directory)
+```
+
+### Guided clean
+
+`shellguardian clean` lets a user pick from suggestions instead of typing paths manually:
+
+- `shellguardian clean --all-likely` cleans all likely-disposable suggestions
+- `shellguardian clean --select 1 2` cleans specific items from the scan list
+- `shellguardian clean` opens an interactive number prompt in a real terminal
 
 ### Delete preview
 
@@ -135,6 +174,17 @@ High risk
 - refuses `high risk` items by default
 
 If the command is running in a terminal, ShellGuardian asks whether to include review-recommended items. In scripts or CI, pass `--yes` to include them explicitly.
+
+### High-risk confirmation
+
+If a target itself is classified as `high risk`, plain `rm` now refuses to delete it unless you explicitly confirm that choice:
+
+```bash
+shellguardian preview ./src
+shellguardian rm ./src --confirm-high-risk
+```
+
+This is meant for cases where you really do want to remove something important, but only after a deliberate confirmation.
 
 ## Safety model
 

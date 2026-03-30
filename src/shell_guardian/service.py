@@ -194,6 +194,7 @@ def safe_delete(
     *,
     workspace: str | Path | None = None,
     dry_run: bool = False,
+    confirm_high_risk: bool = False,
     allow_root: bool = False,
     allow_outside_workspace: bool = False,
     policy: SafetyPolicy | None = None,
@@ -206,6 +207,12 @@ def safe_delete(
         policy=policy,
     )
     target = active_policy.ensure_not_workspace_root(path, label="delete target")
+    preview = build_delete_preview(target, workspace=active_policy.workspace)
+    target_risk = str(preview["target"]["risk"])
+    if target_risk == "high" and not confirm_high_risk:
+        raise SafetyError(
+            f"Delete refused: target '{target}' is high risk. Re-run with explicit high-risk confirmation."
+        )
     exists = target.exists()
     if dry_run:
         return _finalize(
@@ -216,7 +223,7 @@ def safe_delete(
                 performed=False,
                 target=str(target),
                 message="Dry run: delete would be allowed.",
-                details={"exists": exists},
+                details={"exists": exists, "preview": preview, "confirm_high_risk": confirm_high_risk},
             ),
             audit_logger,
         )
@@ -232,7 +239,11 @@ def safe_delete(
             performed=exists,
             target=str(target),
             message="Delete completed." if exists else "Target did not exist; nothing to delete.",
-            details={"exists_before": exists},
+            details={
+                "exists_before": exists,
+                "preview": preview,
+                "confirm_high_risk": confirm_high_risk,
+            },
         ),
         audit_logger,
     )

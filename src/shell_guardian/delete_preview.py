@@ -240,3 +240,57 @@ def build_delete_preview(target: Path, *, workspace: Path) -> dict[str, object]:
             "risk_counts": risk_counts,
         },
     }
+
+
+def scan_cleanup_candidates(workspace: Path) -> dict[str, object]:
+    candidates: list[dict[str, object]] = []
+    seen_paths: set[str] = set()
+
+    def add_candidate(path: Path) -> None:
+        if not path.exists():
+            return
+        entry = classify_delete_path(path, workspace=workspace)
+        risk = str(entry["risk"])
+        if risk == "high":
+            return
+        path_str = str(path)
+        if path_str in seen_paths:
+            return
+        if any(path.is_relative_to(Path(existing)) for existing in seen_paths):
+            return
+        seen_paths.add(path_str)
+        candidates.append(entry)
+
+    for item in sorted(workspace.iterdir(), key=lambda current: (current.is_file(), str(current))):
+        entry = classify_delete_path(item, workspace=workspace)
+        risk = str(entry["risk"])
+        name_lower = item.name.lower()
+        if risk == "low":
+            add_candidate(item)
+            continue
+        if risk == "review" and name_lower in {"logs", "log", "output", "artifacts", "reports"}:
+            add_candidate(item)
+            continue
+        if item.is_dir() and not item.is_symlink():
+            for child in sorted(item.rglob("*"), key=lambda current: (len(current.parts), str(current))):
+                child_entry = classify_delete_path(child, workspace=workspace)
+                child_risk = str(child_entry["risk"])
+                child_name = child.name.lower()
+                if child_risk == "low":
+                    add_candidate(child)
+                elif child_risk == "review" and child_name in {"logs", "log", "output", "artifacts", "reports"}:
+                    add_candidate(child)
+
+    candidates.sort(key=lambda entry: (entry["risk"] != "low", str(entry["relative_path"])))
+    summary = {
+        "workspace": str(workspace),
+        "candidate_count": len(candidates),
+        "likely_disposable": sum(1 for entry in candidates if entry["risk"] == "low"),
+        "review_recommended": sum(1 for entry in candidates if entry["risk"] == "review"),
+        "high_risk_hidden": sum(
+            1
+            for item in workspace.rglob("*")
+            if classify_delete_path(item, workspace=workspace)["risk"] == "high"
+        ),
+    }
+    return {"workspace": str(workspace), "candidates": candidates, "summary": summary}

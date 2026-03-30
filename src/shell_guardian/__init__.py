@@ -1,5 +1,5 @@
 from .audit import AuditEvent, AuditLogger
-from .delete_preview import build_delete_preview, classify_delete_path
+from .delete_preview import build_delete_preview, classify_delete_path, scan_cleanup_candidates
 from .exceptions import SafetyError
 from .policy import SafetyPolicy
 from .result import OperationResult
@@ -11,6 +11,7 @@ __all__ = [
     "build_delete_preview",
     "classify_delete_path",
     "OperationResult",
+    "scan_cleanup_candidates",
     "SafetyError",
     "SafetyPolicy",
     "preview_delete",

@@ -6,7 +6,9 @@ from pathlib import Path
 import sys
 
 from .audit import AuditLogger
+from .delete_preview import scan_cleanup_candidates
 from .exceptions import SafetyError
+from .result import OperationResult
 from .service import preview_delete, safe_delete, safe_exec, safe_move, smart_delete
 
 
@@ -50,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Approve deletion of review-recommended items in smart mode.",
     )
+    rm_parser.add_argument(
+        "--confirm-high-risk",
+        action="store_true",
+        help="Explicitly confirm deletion when the target itself is classified as high risk.",
+    )
 
     preview_parser = subparsers.add_parser(
         "preview",
@@ -57,6 +64,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _common_flags(preview_parser)
     preview_parser.add_argument("path", help="Path to preview.")
+
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Scan the current workspace and suggest cleanup targets.",
+    )
+    _common_flags(scan_parser)
+
+    clean_parser = subparsers.add_parser(
+        "clean",
+        help="Scan for suggested cleanup targets and delete selected ones.",
+    )
+    _common_flags(clean_parser)
+    clean_parser.add_argument(
+        "--select",
+        nargs="+",
+        type=int,
+        help="Candidate numbers from `shellguardian scan` to clean.",
+    )
+    clean_parser.add_argument(
+        "--all-likely",
+        action="store_true",
+        help="Clean all likely-disposable suggestions without prompting for selection.",
+    )
+    clean_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Also approve deletion of review-recommended items when cleaning.",
+    )
 
     move_parser = subparsers.add_parser("move", help="Safely move a file or directory.")
     _common_flags(move_parser)
@@ -167,14 +202,64 @@ def _render_smart_delete(result: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _render_scan_result(result: dict[str, object]) -> str:
+    scan = result["details"]["scan"]
+    summary = scan["summary"]
+    candidates = scan["candidates"]
+    lines = [
+        f"Workspace scan: {scan['workspace']}",
+        "",
+        "Suggested cleanup targets",
+        (
+            f"- {summary['candidate_count']} candidate(s): "
+            f"{summary['likely_disposable']} likely disposable, "
+            f"{summary['review_recommended']} review recommended"
+        ),
+    ]
+    if summary["high_risk_hidden"]:
+        lines.append(f"- {summary['high_risk_hidden']} high-risk item(s) were intentionally not suggested")
+    if not candidates:
+        lines.append("- no cleanup suggestions found")
+        return "\n".join(lines)
+    for index, entry in enumerate(candidates, start=1):
+        reasons = ", ".join(str(reason) for reason in entry["reasons"])
+        lines.append(
+            f"{index}. {entry['relative_path']} [{str(entry['risk']).upper()}] ({reasons})"
+        )
+    return "\n".join(lines)
+
+
+def _render_clean_result(result: dict[str, object]) -> str:
+    clean = result["details"]["clean"]
+    lines = [
+        f"Workspace clean: {clean['workspace']}",
+        result["message"],
+    ]
+    if clean["selected_candidates"]:
+        lines.extend(["", "Selected targets"])
+        for item in clean["selected_candidates"]:
+            lines.append(f"- {item['relative_path']} [{str(item['risk']).upper()}]")
+    if clean["actions"]:
+        lines.extend(["", "Results"])
+        for action in clean["actions"]:
+            lines.append(f"- {action['target']}: {action['message']}")
+    return "\n".join(lines)
+
+
 def _emit_result(args: argparse.Namespace, result: dict[str, object]) -> None:
-    if args.json or result["action"] not in {"preview_delete", "smart_delete"}:
+    if args.json or result["action"] not in {"preview_delete", "smart_delete", "scan", "clean"}:
         print(json.dumps(result, ensure_ascii=False))
         return
     if result["action"] == "preview_delete":
         print(_render_preview(result))
         return
-    print(_render_smart_delete(result))
+    if result["action"] == "smart_delete":
+        print(_render_smart_delete(result))
+        return
+    if result["action"] == "scan":
+        print(_render_scan_result(result))
+        return
+    print(_render_clean_result(result))
 
 
 def _confirm_review_items(result: dict[str, object]) -> bool:
@@ -185,6 +270,45 @@ def _confirm_review_items(result: dict[str, object]) -> bool:
         return False
     answer = input(f"Delete {len(review_items)} review-recommended item(s) too? [y/N] ")
     return answer.strip().lower() in {"y", "yes"}
+
+
+def _select_scan_candidates(
+    candidates: list[dict[str, object]],
+    *,
+    chosen_indexes: list[int] | None,
+    all_likely: bool,
+) -> list[dict[str, object]]:
+    if all_likely:
+        return [entry for entry in candidates if entry["risk"] == "low"]
+    if chosen_indexes:
+        selected: list[dict[str, object]] = []
+        max_index = len(candidates)
+        for index in chosen_indexes:
+            if index < 1 or index > max_index:
+                raise SafetyError(f"Selection {index} is out of range for {max_index} candidates.")
+            selected.append(candidates[index - 1])
+        deduped: list[dict[str, object]] = []
+        seen_paths: set[str] = set()
+        for entry in selected:
+            if entry["path"] not in seen_paths:
+                seen_paths.add(str(entry["path"]))
+                deduped.append(entry)
+        return deduped
+    if not sys.stdin.isatty():
+        raise SafetyError("No cleanup targets selected. Use --select or --all-likely in non-interactive mode.")
+    print("Enter the numbers to clean, separated by spaces. Press Enter to cancel.")
+    answer = input("> ").strip()
+    if not answer:
+        return []
+    try:
+        numbers = [int(item) for item in answer.split()]
+    except ValueError as exc:
+        raise SafetyError("Selections must be numeric indexes from the scan list.") from exc
+    return _select_scan_candidates(
+        candidates,
+        chosen_indexes=numbers,
+        all_likely=False,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -202,6 +326,55 @@ def main(argv: list[str] | None = None) -> int:
                 allow_root=args.allow_root,
                 allow_outside_workspace=args.allow_outside_workspace,
                 audit_logger=logger,
+            )
+        elif args.command == "scan":
+            result = OperationResult(
+                action="scan",
+                allowed=True,
+                dry_run=True,
+                performed=False,
+                message="Workspace scan completed.",
+                target=str(workspace.resolve()),
+                details={"scan": scan_cleanup_candidates(workspace.resolve())},
+            )
+        elif args.command == "clean":
+            scan = scan_cleanup_candidates(workspace.resolve())
+            selected_candidates = _select_scan_candidates(
+                scan["candidates"],
+                chosen_indexes=args.select,
+                all_likely=args.all_likely,
+            )
+            actions: list[dict[str, object]] = []
+            any_performed = False
+            for candidate in selected_candidates:
+                action_result = smart_delete(
+                    candidate["path"],
+                    workspace=workspace,
+                    confirm_review=args.yes,
+                    allow_root=args.allow_root,
+                    allow_outside_workspace=args.allow_outside_workspace,
+                    audit_logger=logger,
+                )
+                actions.append(action_result.to_dict())
+                any_performed = any_performed or action_result.performed
+            result = OperationResult(
+                action="clean",
+                allowed=True,
+                dry_run=False,
+                performed=any_performed,
+                message=(
+                    f"Cleaned {len(selected_candidates)} selected target(s)."
+                    if selected_candidates
+                    else "No cleanup targets selected."
+                ),
+                target=str(workspace.resolve()),
+                details={
+                    "clean": {
+                        "workspace": str(workspace.resolve()),
+                        "selected_candidates": selected_candidates,
+                        "actions": actions,
+                    }
+                },
             )
         elif args.command == "rm" and args.preview:
             result = preview_delete(
@@ -233,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.path,
                 workspace=workspace,
                 dry_run=args.dry_run,
+                confirm_high_risk=args.confirm_high_risk,
                 allow_root=args.allow_root,
                 allow_outside_workspace=args.allow_outside_workspace,
                 audit_logger=logger,

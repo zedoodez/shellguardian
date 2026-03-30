@@ -15,6 +15,7 @@ from shell_guardian import (
     safe_delete,
     safe_exec,
     safe_move,
+    scan_cleanup_candidates,
     smart_delete,
 )
 
@@ -37,6 +38,26 @@ def test_safe_delete_rejects_protected_root() -> None:
 def test_safe_delete_rejects_workspace_root(tmp_path: Path) -> None:
     with pytest.raises(SafetyError):
         safe_delete(tmp_path, workspace=tmp_path)
+
+
+def test_safe_delete_rejects_high_risk_without_confirmation(tmp_path: Path) -> None:
+    target = tmp_path / "src"
+    target.mkdir()
+    (target / "main.py").write_text("print('hi')", encoding="utf-8")
+
+    with pytest.raises(SafetyError):
+        safe_delete(target, workspace=tmp_path)
+
+
+def test_safe_delete_allows_high_risk_with_confirmation(tmp_path: Path) -> None:
+    target = tmp_path / "src"
+    target.mkdir()
+    (target / "main.py").write_text("print('hi')", encoding="utf-8")
+
+    result = safe_delete(target, workspace=tmp_path, confirm_high_risk=True)
+
+    assert result.performed is True
+    assert not target.exists()
 
 
 def test_safe_move_dry_run_does_not_move(tmp_path: Path) -> None:
@@ -142,6 +163,110 @@ def test_smart_delete_rejects_high_risk_target(tmp_path: Path) -> None:
         smart_delete(target, workspace=tmp_path)
 
 
+def test_scan_cleanup_candidates_finds_low_risk_paths(tmp_path: Path) -> None:
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "bundle.js").write_text("console.log('x')", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("print('hi')", encoding="utf-8")
+
+    scan = scan_cleanup_candidates(tmp_path)
+    relative_paths = [entry["relative_path"] for entry in scan["candidates"]]
+
+    assert "dist" in relative_paths
+    assert "src" not in relative_paths
+
+
+def test_cli_scan_json_lists_candidates(tmp_path: Path) -> None:
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "artifact.log").write_text("log", encoding="utf-8")
+
+    command = [
+        sys.executable,
+        "-m",
+        "shell_guardian",
+        "scan",
+        "--workspace",
+        str(tmp_path),
+        "--json",
+    ]
+
+    completed = subprocess.run(
+        command,
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    payload = json.loads(completed.stdout.strip())
+    assert completed.returncode == 0
+    assert payload["action"] == "scan"
+    assert payload["details"]["scan"]["summary"]["candidate_count"] >= 1
+
+
+def test_cli_clean_select_removes_chosen_candidate(tmp_path: Path) -> None:
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / "artifact.log").write_text("log", encoding="utf-8")
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "main.py").write_text("print('hi')", encoding="utf-8")
+
+    command = [
+        sys.executable,
+        "-m",
+        "shell_guardian",
+        "clean",
+        "--workspace",
+        str(tmp_path),
+        "--select",
+        "1",
+        "--json",
+    ]
+
+    completed = subprocess.run(
+        command,
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    payload = json.loads(completed.stdout.strip())
+    assert completed.returncode == 0
+    assert payload["action"] == "clean"
+    assert not build_dir.exists()
+    assert source_dir.exists()
+
+
+def test_cli_clean_requires_selection_in_non_interactive_mode(tmp_path: Path) -> None:
+    (tmp_path / "build").mkdir()
+
+    command = [
+        sys.executable,
+        "-m",
+        "shell_guardian",
+        "clean",
+        "--workspace",
+        str(tmp_path),
+    ]
+
+    completed = subprocess.run(
+        command,
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    payload = json.loads(completed.stdout.strip())
+    assert completed.returncode == 2
+    assert "No cleanup targets selected" in payload["message"]
+
+
 def test_cli_rm_dry_run(tmp_path: Path) -> None:
     target = tmp_path / "cache"
     target.mkdir()
@@ -200,6 +325,68 @@ def test_cli_preview_json(tmp_path: Path) -> None:
     assert completed.returncode == 0
     assert payload["action"] == "preview_delete"
     assert payload["details"]["preview"]["target"]["risk"] == "low"
+
+
+def test_cli_rm_rejects_high_risk_without_confirmation(tmp_path: Path) -> None:
+    target = tmp_path / "src"
+    target.mkdir()
+    (target / "main.py").write_text("print('hi')", encoding="utf-8")
+
+    command = [
+        sys.executable,
+        "-m",
+        "shell_guardian",
+        "rm",
+        str(target),
+        "--workspace",
+        str(tmp_path),
+    ]
+
+    completed = subprocess.run(
+        command,
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    payload = json.loads(completed.stdout.strip())
+    assert completed.returncode == 2
+    assert "high risk" in payload["message"].lower()
+    assert target.exists()
+
+
+def test_cli_rm_allows_high_risk_with_confirmation(tmp_path: Path) -> None:
+    target = tmp_path / "src"
+    target.mkdir()
+    (target / "main.py").write_text("print('hi')", encoding="utf-8")
+
+    command = [
+        sys.executable,
+        "-m",
+        "shell_guardian",
+        "rm",
+        str(target),
+        "--workspace",
+        str(tmp_path),
+        "--confirm-high-risk",
+        "--json",
+    ]
+
+    completed = subprocess.run(
+        command,
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    payload = json.loads(completed.stdout.strip())
+    assert completed.returncode == 0
+    assert payload["action"] == "delete"
+    assert not target.exists()
 
 
 def test_cli_smart_delete_keeps_review_and_high_risk_without_yes(tmp_path: Path) -> None:
