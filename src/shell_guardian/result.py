@@ -12,6 +12,7 @@ class OperationResult:
     performed: bool
     message: str
     target: str | None = None
+    guidance: dict[str, Any] = field(default_factory=dict)
     details: dict[str, Any] = field(default_factory=dict)
     returncode: int | None = None
     stdout: str | None = None

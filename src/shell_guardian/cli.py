@@ -328,6 +328,43 @@ def main(argv: list[str] | None = None) -> int:
                 audit_logger=logger,
             )
         elif args.command == "scan":
+            scan = scan_cleanup_candidates(workspace.resolve())
+            candidates = []
+            for entry in scan["candidates"]:
+                candidates.append(
+                    {
+                        **entry,
+                        "guidance": {
+                            "risk_level": entry["risk"],
+                            "tone": "info" if entry["risk"] == "low" else "caution",
+                            "human_summary": (
+                                "This looks like temporary, generated, or cache content."
+                                if entry["risk"] == "low"
+                                else "This target may still matter and should be reviewed before deletion."
+                            ),
+                            "agent_hint": (
+                                "Safe to suggest cleanup."
+                                if entry["risk"] == "low"
+                                else "Suggest preview before deleting."
+                            ),
+                            "next_step": (
+                                f"Run shellguardian rm ./{entry['relative_path']} --smart"
+                                if entry["risk"] == "low"
+                                else f"Run shellguardian preview ./{entry['relative_path']}"
+                            ),
+                            "recommended_command": (
+                                f"shellguardian rm ./{entry['relative_path']} --smart"
+                                if entry["risk"] == "low"
+                                else f"shellguardian preview ./{entry['relative_path']}"
+                            ),
+                            "confirmation_prompt": None
+                            if entry["risk"] == "low"
+                            else f"Do you want to review ./{entry['relative_path']} before deleting it?",
+                            "reason_codes": [],
+                        },
+                    }
+                )
+            scan["candidates"] = candidates
             result = OperationResult(
                 action="scan",
                 allowed=True,
@@ -335,7 +372,17 @@ def main(argv: list[str] | None = None) -> int:
                 performed=False,
                 message="Workspace scan completed.",
                 target=str(workspace.resolve()),
-                details={"scan": scan_cleanup_candidates(workspace.resolve())},
+                guidance={
+                    "risk_level": "review" if scan["summary"]["review_recommended"] else "low",
+                    "tone": "caution" if scan["summary"]["review_recommended"] else "info",
+                    "human_summary": "ShellGuardian found suggested cleanup targets in this workspace.",
+                    "agent_hint": "Offer the suggested cleanup targets to the user before deleting anything.",
+                    "next_step": "Use shellguardian clean --all-likely or select specific numbered targets.",
+                    "recommended_command": "shellguardian clean --all-likely",
+                    "confirmation_prompt": None,
+                    "reason_codes": [],
+                },
+                details={"scan": scan},
             )
         elif args.command == "clean":
             scan = scan_cleanup_candidates(workspace.resolve())
@@ -368,6 +415,24 @@ def main(argv: list[str] | None = None) -> int:
                     else "No cleanup targets selected."
                 ),
                 target=str(workspace.resolve()),
+                guidance={
+                    "risk_level": "low" if any_performed else "review",
+                    "tone": "info" if any_performed else "caution",
+                    "human_summary": (
+                        "ShellGuardian cleaned the selected low-risk targets."
+                        if any_performed
+                        else "ShellGuardian did not remove anything because nothing was selected or confirmed."
+                    ),
+                    "agent_hint": "Summarize which suggested targets were cleaned and which still need review.",
+                    "next_step": (
+                        "Run shellguardian scan again to review what remains."
+                        if any_performed
+                        else "Select numbered targets or use --all-likely to continue."
+                    ),
+                    "recommended_command": "shellguardian scan",
+                    "confirmation_prompt": None,
+                    "reason_codes": [],
+                },
                 details={
                     "clean": {
                         "workspace": str(workspace.resolve()),

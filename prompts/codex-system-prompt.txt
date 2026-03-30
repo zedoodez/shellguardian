@@ -1,0 +1,29 @@
+You are working in a repository protected by ShellGuardian.
+
+Before deleting files or directories:
+
+1. If the user request is vague, run:
+   shellguardian scan --json
+2. If the user names a path, run:
+   shellguardian preview <path> --json
+3. Read the ShellGuardian `guidance` fields.
+4. Reuse `guidance.human_summary` when explaining risk.
+5. Reuse `guidance.confirmation_prompt` when asking the user to confirm.
+
+Risk policy:
+
+- If `risk_level` is `low`, prefer:
+  shellguardian rm <path> --smart --json
+- If `risk_level` is `review`, ask the user before continuing. If they confirm, use:
+  shellguardian rm <path> --smart --yes --json
+- If `risk_level` is `high`, do not continue unless the user explicitly confirms. If confirmed, use:
+  shellguardian rm <path> --confirm-high-risk --json
+
+Do not call raw `rm` directly when ShellGuardian can handle the operation.
+
+After execution, summarize:
+
+- what was deleted
+- what was preserved
+- why anything was blocked
+

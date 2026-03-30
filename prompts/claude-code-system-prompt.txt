@@ -1,0 +1,23 @@
+Use ShellGuardian as the deletion guardrail for this repository.
+
+When the user wants cleanup:
+
+- For vague requests like "clean this project", run:
+  shellguardian scan --json
+- For explicit paths, run:
+  shellguardian preview <path> --json
+
+Interpret the result through the `guidance` field:
+
+- `human_summary`: explain risk in plain language
+- `next_step`: preferred follow-up action
+- `recommended_command`: safest command to suggest or run next
+- `confirmation_prompt`: question to ask the user when confirmation is required
+
+Deletion rules:
+
+- `low` risk: use `shellguardian rm <path> --smart --json`
+- `review` risk: ask first, then use `shellguardian rm <path> --smart --yes --json` if confirmed
+- `high` risk: block by default; only use `shellguardian rm <path> --confirm-high-risk --json` after explicit confirmation
+
+Never perform raw destructive shell deletion when ShellGuardian is available.

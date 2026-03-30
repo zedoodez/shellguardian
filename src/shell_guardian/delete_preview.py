@@ -19,6 +19,17 @@ LOW_RISK_DIR_NAMES = {
     "tmp",
 }
 
+SCAN_SKIP_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "env",
+    "node_modules",
+    "site-packages",
+    "venv",
+}
+
 LOW_RISK_FILE_NAMES = {
     ".coverage",
     ".ds_store",
@@ -245,6 +256,10 @@ def build_delete_preview(target: Path, *, workspace: Path) -> dict[str, object]:
 def scan_cleanup_candidates(workspace: Path) -> dict[str, object]:
     candidates: list[dict[str, object]] = []
     seen_paths: set[str] = set()
+    skipped_high_risk = 0
+
+    def should_skip_dir(path: Path) -> bool:
+        return path.name.lower() in SCAN_SKIP_DIR_NAMES
 
     def add_candidate(path: Path) -> None:
         if not path.exists():
@@ -262,6 +277,8 @@ def scan_cleanup_candidates(workspace: Path) -> dict[str, object]:
         candidates.append(entry)
 
     for item in sorted(workspace.iterdir(), key=lambda current: (current.is_file(), str(current))):
+        if item.is_dir() and should_skip_dir(item):
+            continue
         entry = classify_delete_path(item, workspace=workspace)
         risk = str(entry["risk"])
         name_lower = item.name.lower()
@@ -272,14 +289,28 @@ def scan_cleanup_candidates(workspace: Path) -> dict[str, object]:
             add_candidate(item)
             continue
         if item.is_dir() and not item.is_symlink():
-            for child in sorted(item.rglob("*"), key=lambda current: (len(current.parts), str(current))):
-                child_entry = classify_delete_path(child, workspace=workspace)
-                child_risk = str(child_entry["risk"])
-                child_name = child.name.lower()
-                if child_risk == "low":
-                    add_candidate(child)
-                elif child_risk == "review" and child_name in {"logs", "log", "output", "artifacts", "reports"}:
-                    add_candidate(child)
+            for current_root, dirnames, filenames in item.walk():
+                dirnames[:] = [dirname for dirname in dirnames if dirname.lower() not in SCAN_SKIP_DIR_NAMES]
+                for dirname in sorted(dirnames):
+                    child = current_root / dirname
+                    child_entry = classify_delete_path(child, workspace=workspace)
+                    child_risk = str(child_entry["risk"])
+                    child_name = child.name.lower()
+                    if child_risk == "low":
+                        add_candidate(child)
+                    elif child_risk == "review" and child_name in {"logs", "log", "output", "artifacts", "reports"}:
+                        add_candidate(child)
+                for filename in sorted(filenames):
+                    child = current_root / filename
+                    if any(part.lower() in SCAN_SKIP_DIR_NAMES for part in child.parts):
+                        continue
+                    child_entry = classify_delete_path(child, workspace=workspace)
+                    child_risk = str(child_entry["risk"])
+                    child_name = child.name.lower()
+                    if child_risk == "low":
+                        add_candidate(child)
+                    elif child_risk == "review" and child_name in {"logs", "log", "output", "artifacts", "reports"}:
+                        add_candidate(child)
 
     candidates.sort(key=lambda entry: (entry["risk"] != "low", str(entry["relative_path"])))
     summary = {
@@ -287,10 +318,17 @@ def scan_cleanup_candidates(workspace: Path) -> dict[str, object]:
         "candidate_count": len(candidates),
         "likely_disposable": sum(1 for entry in candidates if entry["risk"] == "low"),
         "review_recommended": sum(1 for entry in candidates if entry["risk"] == "review"),
-        "high_risk_hidden": sum(
-            1
-            for item in workspace.rglob("*")
-            if classify_delete_path(item, workspace=workspace)["risk"] == "high"
-        ),
+        "high_risk_hidden": skipped_high_risk,
     }
+    for current_root, dirnames, filenames in workspace.walk():
+        dirnames[:] = [dirname for dirname in dirnames if dirname.lower() not in SCAN_SKIP_DIR_NAMES]
+        for dirname in dirnames:
+            item = current_root / dirname
+            if classify_delete_path(item, workspace=workspace)["risk"] == "high":
+                skipped_high_risk += 1
+        for filename in filenames:
+            item = current_root / filename
+            if classify_delete_path(item, workspace=workspace)["risk"] == "high":
+                skipped_high_risk += 1
+    summary["high_risk_hidden"] = skipped_high_risk
     return {"workspace": str(workspace), "candidates": candidates, "summary": summary}

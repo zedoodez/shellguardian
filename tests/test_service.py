@@ -58,6 +58,8 @@ def test_safe_delete_allows_high_risk_with_confirmation(tmp_path: Path) -> None:
 
     assert result.performed is True
     assert not target.exists()
+    assert result.guidance["risk_level"] == "high"
+    assert "explicitly confirmed" in result.guidance["human_summary"]
 
 
 def test_safe_move_dry_run_does_not_move(tmp_path: Path) -> None:
@@ -116,6 +118,8 @@ def test_preview_delete_marks_risk_levels(tmp_path: Path) -> None:
     assert by_name["cache.log"]["risk"] == "low"
     assert by_name[".env"]["risk"] == "high"
     assert by_name["report.json"]["risk"] == "review"
+    assert result.guidance["risk_level"] == "review"
+    assert "reviewed before deletion" in result.guidance["human_summary"]
 
 
 def test_smart_delete_only_removes_low_risk_by_default(tmp_path: Path) -> None:
@@ -176,6 +180,21 @@ def test_scan_cleanup_candidates_finds_low_risk_paths(tmp_path: Path) -> None:
     assert "src" not in relative_paths
 
 
+def test_scan_cleanup_candidates_skips_virtualenv_noise(tmp_path: Path) -> None:
+    (tmp_path / ".venv" / "lib" / "python3.13" / "site-packages" / "__pycache__").mkdir(parents=True)
+    (tmp_path / ".venv" / "lib" / "python3.13" / "site-packages" / "__pycache__" / "x.pyc").write_text(
+        "x",
+        encoding="utf-8",
+    )
+    (tmp_path / "build").mkdir()
+
+    scan = scan_cleanup_candidates(tmp_path)
+    relative_paths = [entry["relative_path"] for entry in scan["candidates"]]
+
+    assert "build" in relative_paths
+    assert not any(path.startswith(".venv") for path in relative_paths)
+
+
 def test_cli_scan_json_lists_candidates(tmp_path: Path) -> None:
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "artifact.log").write_text("log", encoding="utf-8")
@@ -203,6 +222,8 @@ def test_cli_scan_json_lists_candidates(tmp_path: Path) -> None:
     assert completed.returncode == 0
     assert payload["action"] == "scan"
     assert payload["details"]["scan"]["summary"]["candidate_count"] >= 1
+    assert payload["guidance"]["recommended_command"] == "shellguardian clean --all-likely"
+    assert "guidance" in payload["details"]["scan"]["candidates"][0]
 
 
 def test_cli_clean_select_removes_chosen_candidate(tmp_path: Path) -> None:
@@ -325,6 +346,8 @@ def test_cli_preview_json(tmp_path: Path) -> None:
     assert completed.returncode == 0
     assert payload["action"] == "preview_delete"
     assert payload["details"]["preview"]["target"]["risk"] == "low"
+    assert payload["guidance"]["risk_level"] == "low"
+    assert payload["guidance"]["recommended_command"] == "shellguardian rm ./tmp --smart"
 
 
 def test_cli_rm_rejects_high_risk_without_confirmation(tmp_path: Path) -> None:

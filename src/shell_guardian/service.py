@@ -43,6 +43,141 @@ def _delete_path(path: Path) -> bool:
     return False
 
 
+def _reason_codes(entry: dict[str, object]) -> list[str]:
+    mapping = {
+        "workspace root": "workspace_root",
+        "environment file": "contains_env_file",
+        "project-critical file": "project_critical_file",
+        "repository metadata": "contains_repo_metadata",
+        "source or config directory": "contains_source_code",
+        "source or config file": "contains_source_code",
+        "common cache/build/temp directory": "common_temp_directory",
+        "inside cache/build/temp directory": "inside_temp_directory",
+        "common generated or temporary file": "generated_file",
+        "hidden file or directory": "hidden_path",
+        "recently modified": "recently_modified",
+        "not recognized as disposable": "unknown_disposable_status",
+        "symlink": "symlink_target",
+        "large directory": "large_directory",
+    }
+    seen: list[str] = []
+    for reason in entry.get("reasons", []):
+        code = mapping.get(str(reason), "policy_reason")
+        if code not in seen:
+            seen.append(code)
+    return seen
+
+
+def _risk_tone(risk_level: str) -> str:
+    return {
+        "low": "info",
+        "review": "caution",
+        "high": "blocked",
+    }.get(risk_level, "info")
+
+
+def _preview_guidance(preview: dict[str, object], target: str) -> dict[str, object]:
+    entry = preview["target"]
+    risk_level = str(entry["risk"])
+    reason_codes = _reason_codes(entry)
+    relative_path = str(entry["relative_path"])
+    if risk_level == "low":
+        return {
+            "risk_level": "low",
+            "tone": _risk_tone("low"),
+            "human_summary": "This looks like temporary, generated, or cache content and is likely safe to clean.",
+            "agent_hint": "Safe to suggest cleanup or smart delete.",
+            "next_step": "Proceed with smart delete if cleanup is intended.",
+            "recommended_command": f"shellguardian rm ./{relative_path} --smart",
+            "confirmation_prompt": None,
+            "reason_codes": reason_codes,
+        }
+    if risk_level == "review":
+        return {
+            "risk_level": "review",
+            "tone": _risk_tone("review"),
+            "human_summary": "This target may still contain useful files, so it should be reviewed before deletion.",
+            "agent_hint": "Do not assume this target is disposable.",
+            "next_step": "Preview the target and ask the user before continuing.",
+            "recommended_command": f"shellguardian preview ./{relative_path}",
+            "confirmation_prompt": f"This action would delete files in ./{relative_path} that may still be useful. Do you want to continue?",
+            "reason_codes": reason_codes,
+        }
+    return {
+        "risk_level": "high",
+        "tone": _risk_tone("high"),
+        "human_summary": "This target contains important or sensitive files, so deletion is blocked by default.",
+        "agent_hint": "Do not continue without explicit user confirmation.",
+        "next_step": "Ask the user for explicit confirmation before retrying.",
+        "recommended_command": f"shellguardian rm ./{relative_path} --confirm-high-risk",
+        "confirmation_prompt": f"This action would delete important files in ./{relative_path}. Are you sure you want to continue?",
+        "reason_codes": reason_codes,
+    }
+
+
+def _scan_candidate_guidance(entry: dict[str, object]) -> dict[str, object]:
+    risk_level = str(entry["risk"])
+    relative_path = str(entry["relative_path"])
+    guidance = _preview_guidance({"target": entry}, str(entry["path"]))
+    if risk_level == "low":
+        guidance["recommended_command"] = f"shellguardian rm ./{relative_path} --smart"
+    else:
+        guidance["recommended_command"] = f"shellguardian preview ./{relative_path}"
+    return guidance
+
+
+def _smart_delete_guidance(preview: dict[str, object], target: str, *, confirm_review: bool, deleted_paths: list[str], preserved_paths: list[str]) -> dict[str, object]:
+    risk_level = str(preview["target"]["risk"])
+    if deleted_paths and preserved_paths:
+        human_summary = "Low-risk files were removed while review-recommended and high-risk files were preserved."
+        next_step = "Review the preserved files and confirm explicitly if you want to delete more."
+    elif deleted_paths:
+        human_summary = "The selected target was cleaned using the smart-delete policy."
+        next_step = "No further action is needed unless you want to review remaining files."
+    else:
+        human_summary = "No files were removed because the remaining contents were not safe to delete automatically."
+        next_step = "Preview the preserved files and ask for confirmation before deleting them."
+    relative_path = str(preview["target"]["relative_path"])
+    return {
+        "risk_level": risk_level,
+        "tone": "caution" if preserved_paths else "info",
+        "human_summary": human_summary,
+        "agent_hint": "Explain what was deleted and what was preserved before asking for any further confirmation.",
+        "next_step": next_step,
+        "recommended_command": f"shellguardian preview ./{relative_path}",
+        "confirmation_prompt": (
+            f"ShellGuardian preserved some files in ./{relative_path}. Do you want to review them before deleting more?"
+            if preserved_paths
+            else None
+        ),
+        "reason_codes": _reason_codes(preview["target"]),
+    }
+
+
+def _delete_guidance(preview: dict[str, object], *, confirm_high_risk: bool) -> dict[str, object]:
+    guidance = _preview_guidance(preview, str(preview["target"]["path"]))
+    if confirm_high_risk and guidance["risk_level"] == "high":
+        guidance["tone"] = "warning"
+        guidance["human_summary"] = "This high-risk delete was explicitly confirmed by the user."
+        guidance["agent_hint"] = "Only proceed because explicit confirmation was already given."
+        guidance["next_step"] = "Proceed carefully and summarize what was removed."
+        guidance["confirmation_prompt"] = None
+    return guidance
+
+
+def _generic_guidance(*, risk_level: str, human_summary: str, agent_hint: str, next_step: str, recommended_command: str | None = None, confirmation_prompt: str | None = None, reason_codes: list[str] | None = None) -> dict[str, object]:
+    return {
+        "risk_level": risk_level,
+        "tone": _risk_tone(risk_level),
+        "human_summary": human_summary,
+        "agent_hint": agent_hint,
+        "next_step": next_step,
+        "recommended_command": recommended_command,
+        "confirmation_prompt": confirmation_prompt,
+        "reason_codes": reason_codes or [],
+    }
+
+
 def preview_delete(
     path: str | Path,
     *,
@@ -75,6 +210,7 @@ def preview_delete(
                 f"{risk_counts['review']} review recommended, "
                 f"{risk_counts['high']} high risk."
             ),
+            guidance=_preview_guidance(preview, str(target)),
             details={"preview": preview},
         ),
         audit_logger,
@@ -178,6 +314,13 @@ def smart_delete(
             performed=bool(deleted_paths),
             target=str(target),
             message=message,
+            guidance=_smart_delete_guidance(
+                preview,
+                str(target),
+                confirm_review=confirm_review,
+                deleted_paths=deleted_paths,
+                preserved_paths=sorted(preserved_paths),
+            ),
             details={
                 "preview": preview,
                 "deleted_paths": deleted_paths,
@@ -223,6 +366,7 @@ def safe_delete(
                 performed=False,
                 target=str(target),
                 message="Dry run: delete would be allowed.",
+                guidance=_delete_guidance(preview, confirm_high_risk=confirm_high_risk),
                 details={"exists": exists, "preview": preview, "confirm_high_risk": confirm_high_risk},
             ),
             audit_logger,
@@ -239,6 +383,7 @@ def safe_delete(
             performed=exists,
             target=str(target),
             message="Delete completed." if exists else "Target did not exist; nothing to delete.",
+            guidance=_delete_guidance(preview, confirm_high_risk=confirm_high_risk),
             details={
                 "exists_before": exists,
                 "preview": preview,
@@ -277,6 +422,13 @@ def safe_move(
                 performed=False,
                 target=str(dst),
                 message="Dry run: move would be allowed.",
+                guidance=_generic_guidance(
+                    risk_level="low",
+                    human_summary="This move stays inside the active workspace and looks safe to perform.",
+                    agent_hint="Safe to proceed with the move.",
+                    next_step="Run the move without dry-run if the destination looks correct.",
+                    recommended_command=f"shellguardian move {src} {dst}",
+                ),
                 details={"source": str(src), "destination": str(dst)},
             ),
             audit_logger,
@@ -291,6 +443,13 @@ def safe_move(
             performed=True,
             target=str(dst),
             message="Move completed.",
+            guidance=_generic_guidance(
+                risk_level="low",
+                human_summary="The move completed inside the active workspace.",
+                agent_hint="Report the source and destination back to the user.",
+                next_step="No further action is needed unless the user wants to verify the moved files.",
+                recommended_command=None,
+            ),
             details={"source": str(src), "destination": str(dst)},
         ),
         audit_logger,
@@ -331,6 +490,13 @@ def safe_exec(
                 performed=False,
                 target=" ".join(args),
                 message="Dry run: command would be allowed.",
+                guidance=_generic_guidance(
+                    risk_level="low",
+                    human_summary="This command passed ShellGuardian policy checks.",
+                    agent_hint="Safe to proceed if the user wants to run it.",
+                    next_step="Run the command without dry-run if you want to execute it.",
+                    recommended_command=" ".join(args),
+                ),
                 details={"argv": args},
             ),
             audit_logger,
@@ -351,6 +517,13 @@ def safe_exec(
             performed=True,
             target=" ".join(args),
             message="Command completed.",
+            guidance=_generic_guidance(
+                risk_level="low",
+                human_summary="The command completed after passing ShellGuardian policy checks.",
+                agent_hint="Summarize the command output and any side effects for the user.",
+                next_step="Review stdout or stderr if you need to explain the result.",
+                recommended_command=None,
+            ),
             details={"argv": args},
             returncode=completed.returncode,
             stdout=completed.stdout,
