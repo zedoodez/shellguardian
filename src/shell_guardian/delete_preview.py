@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import time
 
@@ -102,6 +103,11 @@ HIGH_RISK_SUFFIXES = {
 }
 
 RECENT_SECONDS = 24 * 60 * 60
+
+
+def _walk(path: Path):
+    for current_root, dirnames, filenames in os.walk(path):
+        yield Path(current_root), dirnames, filenames
 
 
 def _kind(path: Path) -> str:
@@ -289,7 +295,7 @@ def scan_cleanup_candidates(workspace: Path) -> dict[str, object]:
             add_candidate(item)
             continue
         if item.is_dir() and not item.is_symlink():
-            for current_root, dirnames, filenames in item.walk():
+            for current_root, dirnames, filenames in _walk(item):
                 dirnames[:] = [dirname for dirname in dirnames if dirname.lower() not in SCAN_SKIP_DIR_NAMES]
                 for dirname in sorted(dirnames):
                     child = current_root / dirname
@@ -320,7 +326,7 @@ def scan_cleanup_candidates(workspace: Path) -> dict[str, object]:
         "review_recommended": sum(1 for entry in candidates if entry["risk"] == "review"),
         "high_risk_hidden": skipped_high_risk,
     }
-    for current_root, dirnames, filenames in workspace.walk():
+    for current_root, dirnames, filenames in _walk(workspace):
         dirnames[:] = [dirname for dirname in dirnames if dirname.lower() not in SCAN_SKIP_DIR_NAMES]
         for dirname in dirnames:
             item = current_root / dirname
