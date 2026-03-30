@@ -19,6 +19,16 @@ It is designed for three reuse layers:
 - CLI: `shellguardian preview|rm|move|exec`
 - Future server/webhook support: policy validation and audit logging are separated from the transport layer
 
+## Agent-ready
+
+ShellGuardian can also be embedded into AI coding agent workflows, not just used as a standalone CLI.
+
+- `--json` results include a `guidance` object with natural-language risk explanations and next-step suggestions
+- prompt templates for Codex and Claude Code are included in [`prompts/`](./prompts/)
+- the recommended interaction protocol is documented in [`docs/agent-protocol.md`](./docs/agent-protocol.md)
+
+This makes ShellGuardian useful even for users who are not very comfortable with command-line deletion flows, because an agent can explain the risk before taking action.
+
 ## Why this exists
 
 AI coding agents are great at automating shell tasks, but they are also very capable of deleting the wrong directory for very boring reasons:
