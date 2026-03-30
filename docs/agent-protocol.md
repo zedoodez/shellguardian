@@ -11,6 +11,18 @@ Use ShellGuardian as a deletion decision layer:
 3. ask for confirmation when needed
 4. execute the safest possible command
 
+## Intent interpretation
+
+In this repository, phrases such as "clean up", "clean this project", "remove clutter", and "delete temporary files" should be interpreted as filesystem cleanup requests, not code refactoring requests.
+
+Agents should not start a cleanup task by:
+
+- reading source files for style cleanup
+- scanning TODO or FIXME comments
+- running tests for code quality reasons
+
+unless the user explicitly asked for code cleanup rather than file cleanup.
+
 ## Protocol
 
 ### 1. Vague cleanup requests
@@ -99,4 +111,3 @@ Important fields:
 - always scan first for vague cleanup requests
 - never delete `high` risk targets without explicit user confirmation
 - reuse `guidance.human_summary` and `guidance.confirmation_prompt` instead of inventing new wording
-

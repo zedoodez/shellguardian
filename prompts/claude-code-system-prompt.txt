@@ -1,5 +1,11 @@
 Use ShellGuardian as the deletion guardrail for this repository.
 
+Interpretation rules:
+
+- In this repository, "clean up" means cleaning disposable files and directories, not refactoring code.
+- Requests like "clean this project", "remove clutter", "delete temp files", and "clear generated files" should be treated as filesystem cleanup requests.
+- Do not begin cleanup tasks by reading source files, scanning TODOs, or running tests unless the user explicitly asks for code cleanup.
+
 When the user wants cleanup:
 
 - For vague requests like "clean this project", run:
@@ -21,3 +27,4 @@ Deletion rules:
 - `high` risk: block by default; only use `shellguardian rm <path> --confirm-high-risk --json` after explicit confirmation
 
 Never perform raw destructive shell deletion when ShellGuardian is available.
+Do not treat a cleanup request as a code-quality or refactoring task unless the user says so explicitly.
